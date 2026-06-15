@@ -1,6 +1,8 @@
 # Agente de Investigación Bibliográfica para Psicología Clínica
 
 > Un agente de IA que busca, filtra y selecciona los papers más relevantes para casos clínicos de psicología, buscando simultáneamente en múltiples bases de datos académicas en inglés y español.
+>
+> **100% gratuito** — Funciona con la capa gratuita de Google Gemini. Sin tarjeta de crédito, sin costos ocultos.
 
 ---
 
@@ -11,6 +13,18 @@ Los psicólogos clínicos latinoamericanos dedican horas a buscar bibliografía 
 ## La solución
 
 Un agente de IA que toma una bitácora clínica redactada en español, traduce los conceptos clave al inglés técnico, y ejecuta búsquedas paralelas en **5 fuentes académicas** simultáneamente. Devuelve los **3 papers más relevantes** con justificación clínica, cita APA y descarga en PDF/CSV.
+
+## Costo: $0
+
+Este proyecto está diseñado para funcionar **sin gastar un centavo**. Utiliza la [API gratuita de Google Gemini](https://aistudio.google.com/app/apikey), que no requiere tarjeta de crédito y ofrece generosos límites de uso diario con modelos como `gemini-3.1-flash-lite-preview`. Las demás fuentes bibliográficas (PubMed, OpenAlex, CrossRef) también son completamente gratuitas y no necesitan API key.
+
+| Servicio | ¿Gratis? | ¿Necesita API key? | Notas |
+|---|---|---|---|
+| Google Gemini | Sí | Sí (gratuita) | [Obtener key](https://aistudio.google.com/app/apikey) — sin tarjeta de crédito |
+| PubMed | Sí | No | Acceso público a E-utilities |
+| OpenAlex | Sí | No | API abierta sin autenticación |
+| CrossRef | Sí | No | Recomendable agregar `CROSSREF_MAILTO` para evitar rate limits |
+| Semantic Scholar | Sí | No | Con API key gratuita aumenta los rate limits |
 
 ---
 
@@ -107,7 +121,7 @@ La aplicación incluye una interfaz web construida con [NiceGUI](https://nicegui
 ### Requisitos
 
 - Python 3.14+
-- Una API key de Google Gemini (gratuita en [AI Studio](https://aistudio.google.com/app/apikey))
+- Una API key de Google Gemini (**gratuita**, sin tarjeta de crédito → [crear key aquí](https://aistudio.google.com/app/apikey))
 
 ### Pasos
 
@@ -128,7 +142,7 @@ cp .env.example .env
 
 | Variable | Requerida | Descripción |
 |---|---|---|
-| `GOOGLE_API_KEY` | Sí | API key de Google Gemini |
+| `GOOGLE_API_KEY` | Sí | API key de Google Gemini (**gratuita** → [crear key](https://aistudio.google.com/app/apikey)) |
 | `SEMANTIC_SCHOLAR_API_KEY` | No | Aumenta rate limits en Semantic Scholar |
 | `CROSSREF_MAILTO` | No | Email de contacto para CrossRef (evita rate limiting) |
 | `MODEL_EXTRACTOR` | No | Modelo para el extractor de queries (default: `google:gemini-3.1-flash-lite-preview`) |
