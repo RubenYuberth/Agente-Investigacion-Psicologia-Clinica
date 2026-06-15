@@ -1,5 +1,5 @@
 import asyncio
-from agentes_cote import agente_investigacion
+from agentes import agente_investigacion
 
 
 async def main():

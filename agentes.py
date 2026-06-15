@@ -8,6 +8,28 @@ import os
 import functools
 import xml.etree.ElementTree as ET
 
+# ═══════════════════════════════════════════════════════════
+# CONFIGURACIÓN DE MODELOS LLM
+# ═══════════════════════════════════════════════════════════
+# Puedes cambiar los modelos usados por cada agente mediante variables
+# de entorno, o editando los valores por defecto aquí.
+#
+# Formatos soportados por pydantic-ai (provider:model-name):
+#   - google:gemini-2.5-flash
+#   - google:gemini-3.1-flash-lite-preview
+#   - google:gemma-3-27b-it
+#   - openai:gpt-4o
+#   - anthropic:claude-3-5-sonnet-latest
+#
+# Nota sobre modelos gratuitos de Google:
+#   - Los modelos "gemini-*" suelen tener capa gratuita en la API de Google AI Studio.
+#   - Los modelos "gemma-*" son open-source y requieren despliegue propio o Vertex AI;
+#     NO están disponibles directamente en la API gratuita de Gemini.
+# Si buscas maximizar el uso gratuito, gemini-3.1-flash-lite-preview es una
+# buena opción para tareas rápidas como extracción de queries.
+MODEL_EXTRACTOR = os.getenv("MODEL_EXTRACTOR", "google:gemini-3.1-flash-lite-preview")
+MODEL_INVESTIGACION = os.getenv("MODEL_INVESTIGACION", "google:gemini-3.1-flash-lite-preview")
+
 load_dotenv()
 
 # Configurar logging para debugging de errores de APIs
@@ -21,21 +43,51 @@ logger = logging.getLogger(__name__)
 class SearchQueryModel(BaseModel):
     """Modelo estructurado para los parámetros de búsqueda bibliográfica.
     
-    El agente extrae estos términos de la bitácora clínica en español,
-    pero DEBE traducirlos al inglés técnico para que las APIs funcionen.
+    El agente extrae términos en DOS IDIOMAS:
+    - INGLÉS técnico para APIs anglosajonas (PubMed, Semantic Scholar, OpenAlex en inglés)
+    - ESPAÑOL original del caso clínico para APIs/source con contenido latinoamericano
+      (OpenAlex en español, CrossRef en español)
+    
+    Los términos en español NO deben ser traducciones literales de los ingleses;
+    deben reflejar el lenguaje real del texto clínico.
     """
+    # ─── Campos en INGLÉS (PubMed, Semantic Scholar, OpenAlex-en) ───
     keywords: list[str] = Field(
         ..., 
-        description="Palabras clave principales en INGLÉS, extraídas del caso clínico. Ejemplo: ['depression', 'cognitive behavioral therapy', 'adolescents']"
+        description="Palabras clave principales en INGLÉS técnico. Ejemplo: ['depression', 'cognitive behavioral therapy', 'adolescents']"
     )
     synonyms: list[str] = Field(
-        default=[], 
-        description="Sinónimos o términos relacionados en INGLÉS que amplíen la búsqueda. Ejemplo: ['major depressive disorder', 'CBT', 'teenagers']"
+        ..., 
+        description="Sinónimos o términos relacionados en INGLÉS. Ejemplo: ['major depressive disorder', 'CBT', 'teenagers']"
     )
     concepts: list[str] = Field(
-        default=[], 
+        ..., 
         description="Conceptos clínicos generales en INGLÉS. Ejemplo: ['psychotherapy', 'mental health']"
     )
+    study_types: list[str] = Field(
+        ..., 
+        description="Tipos de estudio relevantes en INGLÉS. Ejemplo: ['RCT', 'meta-analysis', 'systematic review', 'cohort study']"
+    )
+    
+    # ─── Campos en ESPAÑOL (OpenAlex-es, CrossRef) ───
+    keywords_es: list[str] = Field(
+        ..., 
+        description="Palabras clave principales en ESPAÑOL extraídas directamente del texto clínico. Ejemplo: ['depresión', 'terapia cognitivo conductual', 'adolescentes']"
+    )
+    synonyms_es: list[str] = Field(
+        ..., 
+        description="Sinónimos o términos relacionados en ESPAÑOL. Ejemplo: ['trastorno depresivo mayor', 'TCC', 'jóvenes']"
+    )
+    concepts_es: list[str] = Field(
+        ..., 
+        description="Conceptos clínicos generales en ESPAÑOL. Ejemplo: ['psicoterapia', 'salud mental']"
+    )
+    study_types_es: list[str] = Field(
+        ..., 
+        description="Tipos de estudio relevantes en ESPAÑOL. Ejemplo: ['ensayo clínico aleatorizado', 'metaanálisis', 'revisión sistemática', 'estudio de cohorte']"
+    )
+    
+    # ─── Campos comunes ───
     year_range: tuple[int, int] | None = Field(
         default=None, 
         description="Rango de años de publicación si es relevante. Ejemplo: (2020, 2024)"
@@ -43,10 +95,6 @@ class SearchQueryModel(BaseModel):
     open_access_only: bool = Field(
         default=False, 
         description="Si se deben priorizar solo artículos de acceso abierto"
-    )
-    study_types: list[str] = Field(
-        default=[], 
-        description="Tipos de estudio relevantes en INGLÉS. Ejemplo: ['RCT', 'meta-analysis', 'systematic review', 'cohort study']"
     )
 
 
@@ -113,38 +161,46 @@ Tu objetivo es ayudar a psicólogos a encontrar papers relevantes para sus casos
 
 INSTRUCCIONES CRÍTICAS:
 1. El usuario te enviará una bitácora clínica, resumen de sesión o apuntes del paciente en ESPAÑOL.
-2. Tu PRIMER paso SIEMPRE debe ser usar la herramienta `extract_search_query` para analizar el texto y extraer términos de búsqueda estructurados.
-3. Todos los términos de búsqueda (keywords, synonyms, concepts, study_types) DEBEN estar en INGLÉS técnico, ya que las APIs de búsqueda científica trabajan en inglés.
-4. NO inventes términos que no estén presentes o implícitos en el texto del usuario. Si hay duda, usa los términos más generales que aparecen en el caso.
-5. Si el texto es ambiguo, usa los términos más comunes y ampliamente indexados en bases de datos psicológicas.
-6. Tu SEGUNDO paso debe ser usar la herramienta `search_all_sources` con el SearchQueryModel generado.
-7. La tool `search_all_sources` devolverá SOLO una selección pre-filtrada de los mejores papers (generalmente la mitad superior).
-8. De los papers que recibas de `search_all_sources`, tu tarea final es seleccionar EXACTAMENTE LOS 2 PAPERS MÁS RELEVANTES para el caso clínico del usuario.
-9. El output final DEBE ser una lista con EXACTAMENTE 2 objetos `Paper` (o menos, si no hay suficientes resultados; pero NUNCA más de 2).
-10. Los abstracts deben permanecer en inglés (idioma original). No los traduzcas.
-11. Si no encuentras resultados relevantes, devuelve una lista vacía.
-12. Sé riguroso con los DOIs: solo incluye DOIs válidos, no inventes.
+2. Tu PRIMER paso SIEMPRE debe ser usar la herramienta `extract_search_query` para analizar el texto y extraer términos de búsqueda estructurados EN DOS IDIOMAS (inglés técnico y español original).
+3. El extractor generará:
+   - Términos en INGLÉS para buscar en PubMed, Semantic Scholar y OpenAlex en inglés.
+   - Términos en ESPAÑOL para buscar en OpenAlex en español y CrossRef (bibliografía latinoamericana e hispánica).
+4. Tu SEGUNDO paso debe ser usar la herramienta `search_all_sources` con el SearchQueryModel generado.
+5. La tool `search_all_sources` buscará en 5 fuentes en paralelo:
+   - PubMed (inglés)
+   - Semantic Scholar (inglés)
+   - OpenAlex en inglés
+   - OpenAlex en español
+   - CrossRef en español
+   Si alguna fuente no devuelve resultados, la herramienta falla silenciosamente y continúa con las demás.
+6. De los papers que recibas de `search_all_sources`, tu tarea final es seleccionar EXACTAMENTE LOS 2 PAPERS MÁS RELEVANTES para el caso clínico del usuario.
+7. El output final DEBE ser una lista con EXACTAMENTE 2 objetos `Paper` (o menos, si no hay suficientes resultados; pero NUNCA más de 2).
+8. Los abstracts deben permanecer en su idioma original (inglés o español). No los traduzcas.
+9. Si no encuentras resultados relevantes, devuelve una lista vacía.
+10. Sé riguroso con los DOIs: solo incluye DOIs válidos, no inventes.
 
 EJEMPLO DE FLUJO DE TRABAJO:
 - Usuario: "Paciente de 12 años con TDAH y ansiedad social, tratamiento con metilfenidato"
 - Paso 1: Llamas a extract_search_query(bitacora_clinica=...)
-- Resultado: keywords=["ADHD", "social anxiety", "methylphenidate"], synonyms=["attention deficit hyperactivity disorder", "social phobia"], concepts=["pediatric", "psychopharmacology"]
+- Resultado: keywords=["ADHD", ...], keywords_es=["TDAH", ...], etc.
 - Paso 2: Llamas a search_all_sources(query_model=...)
-- Resultado: list[Paper] con papers relevantes
+- Resultado: list[Paper] con papers relevantes en inglés y/o español
 """
 
 EXTRACTOR_PROMPT = """Eres un extractor de términos de búsqueda para bases de datos científicas.
 
-Recibirás un texto clínico en ESPAÑOL y debes extraer los términos de búsqueda más relevantes.
+Recibirás un texto clínico en ESPAÑOL y debes extraer los términos de búsqueda más relevantes EN DOS IDIOMAS:
+1. INGLÉS técnico, para buscar en PubMed, Semantic Scholar y OpenAlex en inglés.
+2. ESPAÑOL original, para buscar en OpenAlex en español y CrossRef (bibliografía latinoamericana e hispánica).
 
-REGLAS:
-1. Todos los términos DEBEN estar en INGLÉS técnico.
-2. Extrae keywords principales (términos centrales del caso).
-3. Extrae sinónimos ampliamente usados en literatura científica.
-4. Extrae conceptos generales del área (ej. psychotherapy, pediatrics).
-5. Si el usuario menciona tipos de estudio (ej. "ensayo clínico"), inclúyelo en study_types.
-6. NO inventes términos que no estén en el texto o implícitos en el contexto.
-7. Si no hay información sobre años, deja year_range como null.
+REGLAS CRÍTICAS:
+1. Los campos sin sufijo (_es) deben estar en INGLÉS técnico.
+2. Los campos con sufijo _es deben estar en ESPAÑOL, extraídos DIRECTAMENTE del texto clínico. NO son traducciones literales de los términos en inglés; reflejan el lenguaje real del caso.
+3. Extrae keywords principales, sinónimos, conceptos generales y tipos de estudio en AMBOS idiomas.
+4. Si no hay sinónimos/conceptos/tipos de estudio explícitos en algún idioma, devuelve una lista vacía [] para ese campo, pero NUNCA lo omitas.
+5. NO inventes términos que no estén en el texto o implícitos en el contexto.
+6. Si no hay información sobre años, deja year_range como null.
+7. Usa términos ampliamente indexados en bases de datos científicas cuando el texto sea ambiguo.
 
 EJEMPLO:
 Texto: "Paciente de 12 años con TDAH y ansiedad social, tratamiento con metilfenidato"
@@ -152,9 +208,13 @@ Resultado:
 keywords: ["ADHD", "social anxiety", "methylphenidate"]
 synonyms: ["attention deficit hyperactivity disorder", "social phobia"]
 concepts: ["pediatric", "psychopharmacology"]
+study_types: []
+keywords_es: ["TDAH", "ansiedad social", "metilfenidato"]
+synonyms_es: ["trastorno por déficit de atención e hiperactividad", "fobia social"]
+concepts_es: ["pediatría", "psicofarmacología"]
+study_types_es: []
 year_range: null
 open_access_only: false
-study_types: []
 """
 
 
@@ -174,7 +234,7 @@ def _get_query_extractor() -> Agent:
                 "Configúrala en un archivo .env o como variable de entorno."
             )
         _query_extractor = Agent(
-            'google:gemini-2.5-flash',
+            MODEL_EXTRACTOR,
             system_prompt=EXTRACTOR_PROMPT,
             output_type=SearchQueryModel,
         )
@@ -192,7 +252,7 @@ def _get_agente_investigacion() -> Agent:
                 "Configúrala en un archivo .env o como variable de entorno."
             )
         _agente_investigacion = Agent(
-            'google:gemini-2.5-flash',
+            MODEL_INVESTIGACION,
             system_prompt=SYSTEM_PROMPT,
             output_type=list[Paper],
         )
@@ -211,13 +271,14 @@ async def extract_search_query(ctx: RunContext[None], bitacora_clinica: str) -> 
     y extrae los parámetros de búsqueda bibliográfica estructurados.
     
     Esta tool usa un sub-agente especializado para procesar el texto clínico
-    en español y generar un SearchQueryModel con términos en inglés técnico.
+    en español y generar un SearchQueryModel con términos en INGLÉS TÉCNICO
+    y en ESPAÑOL ORIGINAL.
     
     Args:
         bitacora_clinica: Texto en español con la bitácora, resumen de sesión o apuntes del caso.
     
     Returns:
-        SearchQueryModel con los términos de búsqueda extraídos y traducidos al inglés.
+        SearchQueryModel con los términos de búsqueda en ambos idiomas.
     """
     extractor = _get_query_extractor()
     result = await extractor.run(bitacora_clinica)
@@ -225,34 +286,46 @@ async def extract_search_query(ctx: RunContext[None], bitacora_clinica: str) -> 
 
 
 async def search_all_sources(ctx: RunContext[None], query_model: SearchQueryModel) -> list[Paper]:
-    """Busca artículos científicos en paralelo en OpenAlex, PubMed y Semantic Scholar.
+    """Busca artículos científicos en paralelo en 5 fuentes.
     
-    Recibe un SearchQueryModel estructurado y realiza búsquedas en las tres APIs
-    simultáneamente. Deduplica los resultados por DOI, tolera fallos de APIs
-    individuales, mapea los resultados al modelo Paper, y finalmente aplica un
-    ranking preliminar para devolver solo la mitad superior (ahorrando tokens
-    al agente LLM que hará la selección final).
+    Fuentes de búsqueda:
+    1. PubMed (inglés)
+    2. Semantic Scholar (inglés)
+    3. OpenAlex en inglés
+    4. OpenAlex en español
+    5. CrossRef en español (bibliografía latinoamericana e hispánica)
+    
+    Recibe un SearchQueryModel estructurado bilingüe, realiza búsquedas en las
+    cinco fuentes simultáneamente, deduplica los resultados por DOI, tolera fallos
+    de APIs individuales, mapea los resultados al modelo Paper, y finalmente
+    aplica un ranking preliminar para devolver solo la mitad superior.
     
     Args:
-        query_model: Objeto SearchQueryModel con los parámetros de búsqueda estructurados.
+        query_model: Objeto SearchQueryModel con los parámetros de búsqueda en inglés y español.
     
     Returns:
         Lista con la mitad superior de objetos Paper, ordenados por relevancia preliminar.
     """
-    # Construir queries específicas para cada API
-    openalex_query = _build_openalex_query(query_model)
+    # Construir queries específicas para cada API e idioma
+    openalex_query_en = _build_openalex_query(query_model)
+    openalex_query_es = _build_openalex_query_es(query_model)
     pubmed_query = _build_pubmed_query(query_model)
     semantic_query = _build_semantic_scholar_query(query_model)
+    crossref_query = _build_crossref_query(query_model)
     
-    logger.info(f"OpenAlex query: {openalex_query}")
+    logger.info(f"OpenAlex EN query: {openalex_query_en}")
+    logger.info(f"OpenAlex ES query: {openalex_query_es}")
     logger.info(f"PubMed query: {pubmed_query}")
     logger.info(f"Semantic Scholar query: {semantic_query}")
+    logger.info(f"CrossRef ES query: {crossref_query}")
     
     # Ejecutar búsquedas en paralelo con tolerancia a fallos
     tasks = [
-        _search_with_fallback("openalex", _search_openalex, openalex_query),
+        _search_with_fallback("openalex_en", _search_openalex_en, openalex_query_en),
+        _search_with_fallback("openalex_es", _search_openalex_es, openalex_query_es),
         _search_with_fallback("pubmed", _search_pubmed, pubmed_query),
         _search_with_fallback("semantic_scholar", _search_semantic_scholar, semantic_query),
+        _search_with_fallback("crossref", _search_crossref, crossref_query),
     ]
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -304,7 +377,7 @@ agente_investigacion = _AgenteInvestigacionWrapper()
 # ═══════════════════════════════════════════════════════════
 
 def _build_openalex_query(query: SearchQueryModel) -> str:
-    """Construye una query string para la API de OpenAlex.
+    """Construye una query string en INGLÉS para la API de OpenAlex.
     
     OpenAlex usa búsqueda de texto libre con algunos filtros posibles.
     """
@@ -323,6 +396,37 @@ def _build_openalex_query(query: SearchQueryModel) -> str:
     
     # Open access
     # También se maneja en parámetros de URL
+    
+    return " ".join(parts)
+
+
+def _build_openalex_query_es(query: SearchQueryModel) -> str:
+    """Construye una query string en ESPAÑOL para la API de OpenAlex."""
+    parts = []
+    
+    all_terms = query.keywords_es + query.synonyms_es + query.concepts_es
+    if all_terms:
+        parts.append(" ".join(all_terms))
+    
+    if query.study_types_es:
+        parts.append(" ".join(query.study_types_es))
+    
+    return " ".join(parts)
+
+
+def _build_crossref_query(query: SearchQueryModel) -> str:
+    """Construye una query string en ESPAÑOL para la API de CrossRef.
+    
+    CrossRef indexa mucha bibliografía latinoamericana e hispánica con DOI.
+    """
+    parts = []
+    
+    all_terms = query.keywords_es + query.synonyms_es + query.concepts_es
+    if all_terms:
+        parts.append(" ".join(all_terms))
+    
+    if query.study_types_es:
+        parts.append(" ".join(query.study_types_es))
     
     return " ".join(parts)
 
@@ -394,13 +498,20 @@ async def _search_with_fallback(
         return []
 
 
-async def _search_openalex(query: str, per_page: int = 10) -> list[dict]:
-    """Busca en OpenAlex y devuelve resultados crudos."""
+async def _search_openalex(query: str, per_page: int = 10, source_api: str = "openalex") -> list[dict]:
+    """Busca en OpenAlex y devuelve resultados crudos.
+    
+    Args:
+        query: Query string de búsqueda.
+        per_page: Número de resultados por página.
+        source_api: Identificador de fuente para trazabilidad (ej. 'openalex_en', 'openalex_es').
+    """
     async with httpx.AsyncClient(timeout=30) as client:
         params = {
             "search": query,
             "per-page": per_page,
         }
+        
         response = await client.get(
             "https://api.openalex.org/works",
             params=params
@@ -411,9 +522,19 @@ async def _search_openalex(query: str, per_page: int = 10) -> list[dict]:
         
         # Añadir metadato de fuente
         for r in results:
-            r["_source_api"] = "openalex"
+            r["_source_api"] = source_api
         
         return results
+
+
+async def _search_openalex_en(query: str, per_page: int = 10) -> list[dict]:
+    """Wrapper para buscar en OpenAlex en inglés."""
+    return await _search_openalex(query, per_page, source_api="openalex_en")
+
+
+async def _search_openalex_es(query: str, per_page: int = 10) -> list[dict]:
+    """Wrapper para buscar en OpenAlex en español."""
+    return await _search_openalex(query, per_page, source_api="openalex_es")
 
 
 async def _search_pubmed(query: str, per_page: int = 10) -> list[dict]:
@@ -564,6 +685,44 @@ async def _search_semantic_scholar(query: str, per_page: int = 10) -> list[dict]
         return results
 
 
+async def _search_crossref(query: str, per_page: int = 10) -> list[dict]:
+    """Busca en CrossRef y devuelve resultados crudos.
+    
+    CrossRef es especialmente útil para bibliografía latinoamericana e hispánica
+    porque muchas revistas de SciELO y otras editoriales iberoamericanas registran
+    sus DOIs aquí. No requiere API key, pero se recomienda incluir un mailto
+    en el User-Agent para evitar rate limiting.
+    """
+    headers = {}
+    mailto = os.getenv("CROSSREF_MAILTO")
+    if mailto:
+        headers["User-Agent"] = f"AgentePsicologiaClinica/0.1 (mailto:{mailto})"
+    else:
+        headers["User-Agent"] = "AgentePsicologiaClinica/0.1"
+    
+    async with httpx.AsyncClient(timeout=30) as client:
+        params = {
+            "query": query,
+            "rows": per_page,
+            "sort": "relevance",
+            "order": "desc",
+            "filter": "type:journal-article",
+        }
+        response = await client.get(
+            "https://api.crossref.org/works",
+            params=params,
+            headers=headers
+        )
+        response.raise_for_status()
+        data = response.json()
+        results = data.get("message", {}).get("items", [])
+        
+        for r in results:
+            r["_source_api"] = "crossref"
+        
+        return results
+
+
 # ═══════════════════════════════════════════════════════════
 # DEDUPLICACIÓN Y MAPEO
 # ═══════════════════════════════════════════════════════════
@@ -612,15 +771,17 @@ def _rank_and_filter(papers: list[Paper], query_model: SearchQueryModel) -> list
     """Ranking preliminar algorítmico: filtra la mitad superior de papers.
     
     Calcula un score basado en cuántos términos del query aparecen en el
-    título y abstract de cada paper. Ordena por score (descendente) y, en
-    caso de empate, por año (descendente). Devuelve la mitad superior.
+    título y abstract de cada paper. Considera términos tanto en inglés como
+    en español para capturar relevancia en papers de cualquier idioma.
+    Ordena por score (descendente) y, en caso de empate, por año (descendente).
+    Devuelve la mitad superior.
     
     Este paso reduce la carga de tokens para el LLM que hará la selección
     final de los 2 papers más relevantes.
     
     Args:
         papers: Lista de objetos Paper deduplicados.
-        query_model: SearchQueryModel con los términos de búsqueda.
+        query_model: SearchQueryModel con los términos de búsqueda en inglés y español.
     
     Returns:
         Lista con la mitad superior de papers ordenados por relevancia preliminar.
@@ -629,7 +790,10 @@ def _rank_and_filter(papers: list[Paper], query_model: SearchQueryModel) -> list
         # Si hay 2 o menos, no tiene sentido filtrar
         return papers
     
-    all_terms = [t.lower() for t in query_model.keywords + query_model.synonyms + query_model.concepts]
+    all_terms = [t.lower() for t in (
+        query_model.keywords + query_model.synonyms + query_model.concepts +
+        query_model.keywords_es + query_model.synonyms_es + query_model.concepts_es
+    )]
     
     if not all_terms:
         # Si no hay términos, ordenar solo por año y devolver mitad superior
@@ -657,7 +821,7 @@ def _rank_and_filter(papers: list[Paper], query_model: SearchQueryModel) -> list
 
 def _extract_doi(raw: dict) -> str | None:
     """Extrae el DOI de un resultado crudo, intentando múltiples formatos."""
-    # OpenAlex
+    # OpenAlex (incluye openalex_en y openalex_es)
     if "doi" in raw and raw["doi"]:
         return raw["doi"].replace("https://doi.org/", "").replace("http://doi.org/", "")
     
@@ -677,6 +841,10 @@ def _extract_doi(raw: dict) -> str | None:
         if doi:
             return doi
     
+    # CrossRef
+    if "DOI" in raw and raw["DOI"]:
+        return raw["DOI"]
+    
     return None
 
 
@@ -684,7 +852,7 @@ def _extract_authors(raw: dict, source_api: str) -> list[str]:
     """Extrae autores del formato crudo según la API."""
     authors = []
     
-    if source_api == "openalex":
+    if source_api in ("openalex", "openalex_en", "openalex_es"):
         for auth in raw.get("authorships", []):
             author_name = auth.get("author", {}).get("display_name", "")
             if author_name:
@@ -702,12 +870,21 @@ def _extract_authors(raw: dict, source_api: str) -> list[str]:
             if name:
                 authors.append(name)
     
+    elif source_api == "crossref":
+        for author in raw.get("author", []):
+            family = author.get("family", "")
+            given = author.get("given", "")
+            if family and given:
+                authors.append(f"{family}, {given}")
+            elif family:
+                authors.append(family)
+    
     return authors
 
 
 def _extract_year(raw: dict, source_api: str) -> int | None:
     """Extrae el año de publicación."""
-    if source_api == "openalex":
+    if source_api in ("openalex", "openalex_en", "openalex_es"):
         year = raw.get("publication_year")
         if year:
             return int(year)
@@ -728,35 +905,58 @@ def _extract_year(raw: dict, source_api: str) -> int | None:
         if year:
             return int(year)
     
+    elif source_api == "crossref":
+        # Intentar published-print primero, luego published-online
+        for key in ["published-print", "published-online"]:
+            date_parts = raw.get(key, {}).get("date-parts")
+            if date_parts and date_parts[0]:
+                try:
+                    return int(date_parts[0][0])
+                except (ValueError, IndexError, TypeError):
+                    pass
+        # Fallback: created date
+        created = raw.get("created", {}).get("date-parts")
+        if created and created[0]:
+            try:
+                return int(created[0][0])
+            except (ValueError, IndexError, TypeError):
+                pass
+    
     return None
 
 
 def _extract_title(raw: dict, source_api: str) -> str | None:
     """Extrae el título."""
-    if source_api == "openalex":
+    if source_api in ("openalex", "openalex_en", "openalex_es"):
         return raw.get("display_name")
     elif source_api == "pubmed":
         return raw.get("title")
     elif source_api == "semantic_scholar":
         return raw.get("title")
+    elif source_api == "crossref":
+        title_list = raw.get("title")
+        if title_list and isinstance(title_list, list):
+            return title_list[0]
     return None
 
 
 def _extract_abstract(raw: dict, source_api: str) -> str | None:
     """Extrae el abstract."""
-    if source_api == "openalex":
+    if source_api in ("openalex", "openalex_en", "openalex_es"):
         return raw.get("abstract")
     elif source_api == "pubmed":
         # Ahora disponible gracias a efetch (antes era None con esummary)
         return raw.get("abstract")
     elif source_api == "semantic_scholar":
         return raw.get("abstract")
+    elif source_api == "crossref":
+        return raw.get("abstract")
     return None
 
 
 def _extract_journal(raw: dict, source_api: str) -> str | None:
     """Extrae el nombre de la revista."""
-    if source_api == "openalex":
+    if source_api in ("openalex", "openalex_en", "openalex_es"):
         source = raw.get("primary_location", {}).get("source", {})
         return source.get("display_name")
     elif source_api == "pubmed":
@@ -765,12 +965,20 @@ def _extract_journal(raw: dict, source_api: str) -> str | None:
         venue = raw.get("publicationVenue")
         if venue:
             return venue.get("name")
+    elif source_api == "crossref":
+        container = raw.get("container-title")
+        if container and isinstance(container, list) and container[0]:
+            return container[0]
+        # Fallback: short-container-title
+        short_container = raw.get("short-container-title")
+        if short_container and isinstance(short_container, list) and short_container[0]:
+            return short_container[0]
     return None
 
 
 def _extract_url(raw: dict, source_api: str) -> str | None:
     """Extrae la URL del paper."""
-    if source_api == "openalex":
+    if source_api in ("openalex", "openalex_en", "openalex_es"):
         return raw.get("id")  # OpenAlex ID URL
     elif source_api == "pubmed":
         uid = raw.get("_uid")
@@ -778,18 +986,26 @@ def _extract_url(raw: dict, source_api: str) -> str | None:
             return f"https://pubmed.ncbi.nlm.nih.gov/{uid}/"
     elif source_api == "semantic_scholar":
         return raw.get("url")
+    elif source_api == "crossref":
+        # Preferir URL del DOI si existe
+        doi = _extract_doi(raw)
+        if doi:
+            return f"https://doi.org/{doi}"
+        return raw.get("URL")
     return None
 
 
 def _extract_citations(raw: dict, source_api: str) -> int | None:
     """Extrae el número de citas."""
-    if source_api == "openalex":
+    if source_api in ("openalex", "openalex_en", "openalex_es"):
         return raw.get("cited_by_count")
     elif source_api == "pubmed":
         # No disponible directamente en esummary
         return None
     elif source_api == "semantic_scholar":
         return raw.get("citationCount")
+    elif source_api == "crossref":
+        return raw.get("is-referenced-by-count")
     return None
 
 
