@@ -1,7 +1,7 @@
 [project]
 name = "agentes"
 version = "0.1.0"
-description = "Add your description here"
+description = "Agente de IA para búsqueda bibliográfica en psicología clínica. Busca en PubMed, OpenAlex, Semantic Scholar y CrossRef, selecciona los papers más relevantes con justificación clínica."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
