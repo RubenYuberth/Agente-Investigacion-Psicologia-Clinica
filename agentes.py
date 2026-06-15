@@ -141,6 +141,10 @@ class Paper(BaseModel):
             "Doe, A., & Roe, B. (2019). Advances in machine learning. AI Review, 10(2), 50-75. https://doi.org/10.1037/0003-066X.59.1.29"
         ]
     )
+    justificacion: str | None = Field(
+        default=None,
+        description="Breve explicación en ESPAÑOL de por qué este paper es relevante para el caso clínico del usuario. Debe ser 1-3 frases claras que conecten el contenido del paper con el caso presentado. No inventar; basarse en el título, abstract y caso clínico."
+    )
     # ---- CAMPOS NUEVOS PARA TRAZABILIDAD ----
     source_apis: list[str] = Field(
         default=[],
@@ -173,11 +177,12 @@ INSTRUCCIONES CRÍTICAS:
    - OpenAlex en español
    - CrossRef en español
    Si alguna fuente no devuelve resultados, la herramienta falla silenciosamente y continúa con las demás.
-6. De los papers que recibas de `search_all_sources`, tu tarea final es seleccionar EXACTAMENTE LOS 2 PAPERS MÁS RELEVANTES para el caso clínico del usuario.
-7. El output final DEBE ser una lista con EXACTAMENTE 2 objetos `Paper` (o menos, si no hay suficientes resultados; pero NUNCA más de 2).
-8. Los abstracts deben permanecer en su idioma original (inglés o español). No los traduzcas.
-9. Si no encuentras resultados relevantes, devuelve una lista vacía.
-10. Sé riguroso con los DOIs: solo incluye DOIs válidos, no inventes.
+6. De los papers que recibas de `search_all_sources`, tu tarea final es seleccionar EXACTAMENTE LOS 3 PAPERS MÁS RELEVANTES para el caso clínico del usuario.
+7. El output final DEBE ser una lista con EXACTAMENTE 3 objetos `Paper` (o menos, si no hay suficientes resultados; pero NUNCA más de 3).
+8. Para CADA paper seleccionado, DEBES completar el campo `justificacion` con una breve explicación en ESPAÑOL (1-3 frases) de por qué ese paper es relevante para el caso clínico. Justifica con base en el título, abstract y los elementos del caso (síntomas, población, tratamiento, etc.).
+9. Los abstracts deben permanecer en su idioma original (inglés o español). No los traduzcas.
+10. Si no encuentras resultados relevantes, devuelve una lista vacía.
+11. Sé riguroso con los DOIs: solo incluye DOIs válidos, no inventes.
 
 EJEMPLO DE FLUJO DE TRABAJO:
 - Usuario: "Paciente de 12 años con TDAH y ansiedad social, tratamiento con metilfenidato"
@@ -957,7 +962,8 @@ def _extract_abstract(raw: dict, source_api: str) -> str | None:
 def _extract_journal(raw: dict, source_api: str) -> str | None:
     """Extrae el nombre de la revista."""
     if source_api in ("openalex", "openalex_en", "openalex_es"):
-        source = raw.get("primary_location", {}).get("source", {})
+        primary_location = raw.get("primary_location") or {}
+        source = primary_location.get("source") or {}
         return source.get("display_name")
     elif source_api == "pubmed":
         return raw.get("fulljournalname") or raw.get("source")

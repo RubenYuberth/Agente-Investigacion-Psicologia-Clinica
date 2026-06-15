@@ -43,8 +43,10 @@ async def main():
         print(f"Citas: {paper.citas or 'No disponible'}")
         print(f"Fuentes: {', '.join(paper.source_apis)}")
         print(f"URL: {paper.url or 'No disponible'}")
+        if paper.justificacion:
+            print(f"Justificación: {paper.justificacion}")
         if paper.abstract:
-            print(f"Abstract: {paper.abstract[:300]}...")
+            print(f"Abstract: {paper.abstract}")
         print(f"Referencia APA: {paper.referencia}")
         print()
     
